@@ -90,7 +90,6 @@ namespace ScreenshotInject
 
         public override void Hook()
         {
-            this.DebugMessage("Hook: Begin");
             if (_d3d11VTblAddresses == null)
             {
                 _d3d11VTblAddresses = new List<IntPtr>();
@@ -102,7 +101,6 @@ namespace ScreenshotInject
                 SwapChain swapChain;
                 using (SlimDX.Windows.RenderForm renderForm = new SlimDX.Windows.RenderForm())
                 {
-                    this.DebugMessage("Hook: Before device creation");
                     SlimDX.Result result = SlimDX.Direct3D11.Device.CreateWithSwapChain(
                         DriverType.Hardware,
                         DeviceCreationFlags.None,
@@ -157,17 +155,8 @@ namespace ScreenshotInject
         {
             try
             {
-                if (DXGISwapChain_PresentHook != null)
-                {
-                    DXGISwapChain_PresentHook.Dispose();
-                    DXGISwapChain_PresentHook = null;
-                }
-                if (DXGISwapChain_ResizeTargetHook != null)
-                {
-                    DXGISwapChain_ResizeTargetHook.Dispose();
-                    DXGISwapChain_ResizeTargetHook = null;
-                }
-                
+                DXGISwapChain_PresentHook.Dispose();
+                DXGISwapChain_ResizeTargetHook.Dispose();
                 this.Request = null;
             }
             catch
@@ -200,12 +189,7 @@ namespace ScreenshotInject
         /// <returns></returns>
         int ResizeTargetHook(IntPtr swapChainPtr, ref DXGI.DXGI_MODE_DESC newTargetParameters)
         {
-			if (swapChainPtr != _swapChainPointer)
-            {
-                _swapChain = SlimDX.DXGI.SwapChain.FromPointer(swapChainPtr);
-            }
-            SwapChain swapChain = _swapChain;
-            //using (SlimDX.DXGI.SwapChain swapChain = SlimDX.DXGI.SwapChain.FromPointer(swapChainPtr))
+            using (SlimDX.DXGI.SwapChain swapChain = SlimDX.DXGI.SwapChain.FromPointer(swapChainPtr))
             {
                 // This version creates a new texture for each request so there is nothing to resize.
                 // IF the size of the texture is known each time, we could create it once, and then possibly need to resize it here
@@ -329,7 +313,7 @@ namespace ScreenshotInject
                                 DateTime startCopyToSystemMemory = DateTime.Now;
                                 using (MemoryStream ms = new MemoryStream())
                                 {
-                                    Texture2D.ToStream(textureDest.Device.ImmediateContext, textureDest, ImageFileFormat.Bmp, ms);
+                                    Texture2D.ToStream(textureDest.Device.ImmediateContext, textureDest, ImageFileFormat.Png, ms);
                                     ms.Position = 0;
                                     this.DebugMessage("PresentHook: Copy to System Memory time: " + (DateTime.Now - startCopyToSystemMemory).ToString());
 

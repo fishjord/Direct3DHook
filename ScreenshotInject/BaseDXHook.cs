@@ -1,4 +1,6 @@
-﻿using System;
+﻿#define DEBUG
+
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -6,10 +8,17 @@ using System.Runtime.InteropServices;
 using EasyHook;
 using System.IO;
 using System.Runtime.Remoting;
+using System.Collections;
+using System.Drawing.Imaging;
+using System.Threading;
+using AVIStreamCLI;
+using ScreenshotInterface;
+using System.Drawing;
 
 namespace ScreenshotInject
 {
-    internal abstract class BaseDXHook: IDXHook
+
+    internal abstract class BaseDXHook : IDXHook
     {
         public BaseDXHook(ScreenshotInterface.ScreenshotInterface ssInterface)
         {
@@ -37,12 +46,50 @@ namespace ScreenshotInject
             }
         }
 
+        #region Message Handling
+
+        protected void ErrorMessage(string message)
+        {
+            try
+            {
+                Interface.OnMessage(this.ProcessId, MessageType.error, HookName + ": " + message);
+            }
+            catch (RemotingException re)
+            {
+                // Ignore remoting exceptions
+            }
+        }
+
+        protected void InfoMessage(string message)
+        {
+            try
+            {
+                Interface.OnMessage(this.ProcessId, MessageType.info, HookName + ": " + message);
+            }
+            catch (RemotingException re)
+            {
+                // Ignore remoting exceptions
+            }
+        }
+
+        protected void WarningMessage(string message)
+        {
+            try
+            {
+                Interface.OnMessage(this.ProcessId, MessageType.warning, HookName + ": " + message);
+            }
+            catch (RemotingException re)
+            {
+                // Ignore remoting exceptions
+            }
+        }
+
         protected void DebugMessage(string message)
         {
 #if DEBUG
             try
             {
-                Interface.OnDebugMessage(this.ProcessId, HookName + ": " + message);
+                Interface.OnMessage(this.ProcessId, MessageType.debug, HookName + ": " + message);
             }
             catch (RemotingException re)
             {
@@ -50,6 +97,8 @@ namespace ScreenshotInject
             }
 #endif
         }
+
+        #endregion
 
         protected IntPtr[] GetVTblAddresses(IntPtr pointer, int numberOfMethods)
         {
@@ -62,70 +111,119 @@ namespace ScreenshotInject
             return vtblAddresses.ToArray();
         }
 
-        protected static void CopyStream(Stream input, Stream output)
+        #region Frame Sending Code
+
+        private ScreenshotSink frameTarget;
+        private bool paused = true;
+        private double freq;
+        protected DateTime lastScreenshot;
+        protected Rectangle captureRect;
+
+        private object requestLock = new object();
+
+        public bool Paused
         {
-            int bufferSize = 32768;
-            byte[] buffer = new byte[bufferSize];
-            while (true)
-            {
-                int read = input.Read(buffer, 0, buffer.Length);
-                if (read <= 0)
-                {
-                    return;
-                }
-                output.Write(buffer, 0, read);
-            }
+            get { return paused; }
         }
 
-        /// <summary>
-        /// Reads data from a stream until the end is reached. The
-        /// data is returned as a byte array. An IOException is
-        /// thrown if any of the underlying IO calls fail.
-        /// </summary>
-        /// <param name="stream">The stream to read data from</param>
-        protected static byte[] ReadFullStream(Stream stream)
-        {
-            if (stream is MemoryStream)
-            {
-                stream.Position = 0;
-                return ((MemoryStream)stream).ToArray();
-            }
-            else
-            {
-                byte[] buffer = new byte[32768];
-                using (MemoryStream ms = new MemoryStream())
-                {
-                    while (true)
-                    {
-                        int read = stream.Read(buffer, 0, buffer.Length);
-                        if (read > 0)
-                            ms.Write(buffer, 0, read);
-                        if (read < buffer.Length)
-                            return ms.ToArray();
-                    }
-                }
-            }
-        }
-
-        protected void SendResponse(Stream stream, Guid requestId)
-        {
-            SendResponse(ReadFullStream(stream), requestId);
-        }
-
-        protected void SendResponse(byte[] bitmapData, Guid requestId)
+        public void newRequest(ScreenshotRequest request)
         {
             try
             {
-                // Send the buffer back to the host process
-                Interface.OnScreenshotResponse(RemoteHooking.GetCurrentProcessId(), requestId, bitmapData);
+                lock (requestLock)
+                {
+                    if (request is PauseRequest)
+                    {
+                        paused = true;
+                    }
+                    else if (request is StopRequest)
+                    {
+                        paused = true;
+                        if (frameTarget != null)
+                        {
+                            frameTarget.close();
+                            frameTarget = null;
+                        }
+                    }
+                    else if (request is ResumeRequest)
+                    {
+                        if (frameTarget != null)
+                        {
+                            paused = false;
+                        }
+                    }
+                    else if (request is StreamRequest)
+                    {
+                        StreamRequest streamRequest = (StreamRequest)request;
+                        frameTarget = new FrameServer(streamRequest.Host, streamRequest.Port);
+                        this.captureRect = streamRequest.Region;
+                        this.freq = 1 / streamRequest.Fps;
+                        paused = false;
+                    }
+                    else if (request is CaptureRequest)
+                    {
+                        CaptureRequest captureRequest = (CaptureRequest)request;
+                        frameTarget = new IPCHostSink(ProcessId, request.RequestId, Interface);
+                        this.captureRect = captureRequest.Region;
+                        this.freq = 1 / captureRequest.Fps;
+                        paused = false;
+                    }
+                }
             }
-            catch (RemotingException re)
+            catch (Exception e)
             {
-                // Ignore remoting exceptions
-                // .NET Remoting will throw an exception if the host application is unreachable
+                paused = true;
+                if (frameTarget != null)
+                {
+                    frameTarget.close();
+                    frameTarget = null;
+                }
+                ErrorMessage("Exception when processing request" + request + "\n\r" + e);
+                paused = true;
             }
         }
 
+        protected void queueRawImage(byte[] imageData, int width, int height, PixelFormat fmt)
+        {
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                lock (requestLock)
+                {
+                    if (frameTarget == null)
+                    {
+                        return;
+                    }
+
+                    try
+                    {
+                        frameTarget.processData(imageData, width, height, fmt);
+                    }
+                    catch (Exception e)
+                    {
+                        paused = true;
+                        ErrorMessage("Error when passing image to the sink\n\r" + e);
+                    }
+                }
+            });
+        }
+        #endregion
+
+        public virtual void Cleanup()
+        {
+            lock (requestLock)
+            {
+                if (frameTarget != null)
+                {
+                    frameTarget.close();
+                    frameTarget = null;
+                }
+            }
+        }
+
+        protected bool readyForScreenshot()
+        {
+            return !paused && (DateTime.Now - lastScreenshot).TotalMilliseconds > freq;
+        }
 
         #region IDXHook Members
 
@@ -135,22 +233,7 @@ namespace ScreenshotInject
             set;
         }
 
-        public bool ShowOverlay
-        {
-            get;
-            set;
-        }
-
-        private ScreenshotInterface.ScreenshotRequest _request;
-        public ScreenshotInterface.ScreenshotRequest Request
-        {
-            get { return _request; }
-            set { _request = value;  }
-        }
-
         public abstract void Hook();
-
-        public abstract void Cleanup();
 
         #endregion
     }

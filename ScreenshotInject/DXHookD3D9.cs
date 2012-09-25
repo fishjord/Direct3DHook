@@ -8,10 +8,12 @@ using System.Runtime.InteropServices;
 using System.IO;
 using System.Threading;
 using System.Drawing;
+using SlimDX;
+using System.Drawing.Imaging;
 
 namespace ScreenshotInject
 {
-    internal class DXHookD3D9: BaseDXHook
+    internal class DXHookD3D9 : BaseDXHook
     {
         public DXHookD3D9(ScreenshotInterface.ScreenshotInterface ssInterface)
             : base(ssInterface)
@@ -87,6 +89,7 @@ namespace ScreenshotInject
         /// </summary>
         public override void Cleanup()
         {
+            base.Cleanup();
             try
             {
                 lock (_lockRenderTarget)
@@ -96,8 +99,6 @@ namespace ScreenshotInject
                         _renderTarget.Dispose();
                         _renderTarget = null;
                     }
-
-                    Request = null;
                 }
             }
             catch
@@ -162,15 +163,11 @@ namespace ScreenshotInject
             }
         }
 
-        TimeSpan _lastScreenshotTime = new TimeSpan(0);
 
-        DateTime? _lastFrame;
-        
-        // Used in the overlay
-        DateTime? _lastRequestTime;
-        SlimDX.Vector2[] _lineVectors = null;
-        float _lineAlpha = 1;
-
+        private int width;
+        private int height;
+        private PixelFormat format;
+        private byte[] data = new byte[1];
         /// <summary>
         /// Hook for IDirect3DDevice9.EndScene
         /// </summary>
@@ -188,50 +185,26 @@ namespace ScreenshotInject
                     // Is there a screenshot request? If so lets grab the backbuffer
                     lock (_lockRenderTarget)
                     {
-                        if (Request != null)
+                        if (base.readyForScreenshot())
                         {
-                            _lastRequestTime = DateTime.Now;
-                            DateTime start = DateTime.Now;
+                            lastScreenshot = DateTime.Now;
                             try
                             {
                                 // First ensure we have a Surface to the render target data into
-                                if (_renderTarget == null)
+                                if (_renderTarget == null || _renderTarget.Disposed)
                                 {
                                     // Create offscreen surface to use as copy of render target data
                                     using (SwapChain sc = device.GetSwapChain(0))
                                     {
+                                        width = sc.PresentParameters.BackBufferWidth;
+                                        height = sc.PresentParameters.BackBufferHeight;
+                                        format = PixelFormat.Format32bppArgb;
+                                        this.DebugMessage("Back buffer width=" + width + " height=" + height + " format=" + sc.PresentParameters.BackBufferFormat);
+
+
                                         _renderTarget = Surface.CreateOffscreenPlain(device, sc.PresentParameters.BackBufferWidth, sc.PresentParameters.BackBufferHeight, sc.PresentParameters.BackBufferFormat, Pool.SystemMemory);
                                     }
                                 }
-
-                                #region Prepare lines for overlay
-                                if (this.Request.RegionToCapture.Width == 0)
-                                {
-                                    _lineVectors = new SlimDX.Vector2[] { 
-                                        new SlimDX.Vector2(0, 0),
-                                        new SlimDX.Vector2(_renderTarget.Description.Width - 1, _renderTarget.Description.Height - 1),
-                                        new SlimDX.Vector2(0, _renderTarget.Description.Height - 1),
-                                        new SlimDX.Vector2(_renderTarget.Description.Width - 1, 0),
-                                        new SlimDX.Vector2(0, 0),
-                                        new SlimDX.Vector2(0, _renderTarget.Description.Height - 1),
-                                        new SlimDX.Vector2(_renderTarget.Description.Width - 1, _renderTarget.Description.Height - 1),
-                                        new SlimDX.Vector2(_renderTarget.Description.Width - 1, 0),
-                                    };
-                                }
-                                else
-                                {
-                                    _lineVectors = new SlimDX.Vector2[] { 
-                                        new SlimDX.Vector2(this.Request.RegionToCapture.X, this.Request.RegionToCapture.Y),
-                                        new SlimDX.Vector2(this.Request.RegionToCapture.Right, this.Request.RegionToCapture.Bottom),
-                                        new SlimDX.Vector2(this.Request.RegionToCapture.X, this.Request.RegionToCapture.Bottom),
-                                        new SlimDX.Vector2(this.Request.RegionToCapture.Right, this.Request.RegionToCapture.Y),
-                                        new SlimDX.Vector2(this.Request.RegionToCapture.X, this.Request.RegionToCapture.Y),
-                                        new SlimDX.Vector2(this.Request.RegionToCapture.X, this.Request.RegionToCapture.Bottom),
-                                        new SlimDX.Vector2(this.Request.RegionToCapture.Right, this.Request.RegionToCapture.Bottom),
-                                        new SlimDX.Vector2(this.Request.RegionToCapture.Right, this.Request.RegionToCapture.Y),
-                                    };
-                                }
-                                #endregion
 
                                 using (Surface backBuffer = device.GetBackBuffer(0, 0))
                                 {
@@ -244,64 +217,15 @@ namespace ScreenshotInject
                             }
                             finally
                             {
-                                // We have completed the request - mark it as null so we do not continue to try to capture the same request
-                                // Note: If you are after high frame rates, consider implementing buffers here to capture more frequently
-                                //         and send back to the host application as needed. The IPC overhead significantly slows down 
-                                //         the whole process if sending frame by frame.
-                                Request = null;
                             }
-                            DateTime end = DateTime.Now;
-                            this.DebugMessage("EndSceneHook: Capture time: " + (end - start).ToString());
-                            _lastScreenshotTime = (end - start);
                         }
                     }
-                    #endregion
-
-                    #region Example: Draw Overlay (after screenshot so we don't capture overlay as well)
-
-                    if (this.ShowOverlay)
-                    {
-                        #region Draw fading lines based on last screencapture request
-                        if (_lastRequestTime != null && _lineVectors != null)
-                        {
-                            TimeSpan timeSinceRequest = DateTime.Now - _lastRequestTime.Value;
-                            if (timeSinceRequest.TotalMilliseconds < 1000.0)
-                            {
-                                using (Line line = new Line(device))
-                                {
-                                    _lineAlpha = (float)((1000.0 - timeSinceRequest.TotalMilliseconds) / 1000.0); // This is our fade out
-                                    line.Antialias = true;
-                                    line.Width = 1.0f;
-                                    line.Begin();
-                                    line.Draw(_lineVectors, new SlimDX.Color4(_lineAlpha, 0.5f, 0.5f, 1.0f));
-                                    line.End();
-                                }
-                            }
-                            else
-                            {
-                                _lineVectors = null;
-                            }
-                        }
-                        #endregion
-
-                        #region Draw frame rate
-                        using (SlimDX.Direct3D9.Font font = new SlimDX.Direct3D9.Font(device, new System.Drawing.Font("Times New Roman", 16.0f)))
-                        {
-                            if (_lastFrame != null)
-                            {
-                                font.DrawString(null, String.Format("{0:N1} fps", (1000.0 / (DateTime.Now - _lastFrame.Value).TotalMilliseconds)), 100, 100, System.Drawing.Color.Red);
-                            }
-                            _lastFrame = DateTime.Now;
-                        }
-                        #endregion
-                    }
-
                     #endregion
                 }
-                catch(Exception e)
+                catch (Exception e)
                 {
                     // If there is an error we do not want to crash the hooked application, so swallow the exception
-                    this.DebugMessage("EndSceneHook: Exeception: " + e.GetType().FullName + ": " + e.Message);
+                    this.ErrorMessage("EndSceneHook: Exeception: " + e.GetType().FullName + ": " + e.Message + " " + e);
                 }
 
                 // EasyHook has already repatched the original EndScene - so calling EndScene against the SlimDX device will call the original
@@ -315,68 +239,22 @@ namespace ScreenshotInject
         /// </summary>
         void ProcessRequest()
         {
-            if (Request != null)
+
+            // After the Stream is created we are now finished with _renderTarget and have our own separate copy of the data,
+            // therefore it will now be safe to begin a new thread to complete processing.
+            // Note: RetrieveImageData will take care of closing the stream.
+            // Note 2: Surface.ToStream is the slowest part of the screen capture process - the other methods
+            //         available to us at this point are _renderTarget.GetDC(), and _renderTarget.LockRectangle/UnlockRectangle
+            DataRectangle dr = _renderTarget.LockRectangle(LockFlags.ReadOnly);
+
+            if (data.Length != dr.Data.Length)
             {
-                // SlimDX now uses a marshal_as for Rectangle to RECT that correctly does the conversion for us, therefore no need
-                // to adjust the region Width/Height to fit the x1,y1,x2,y2 format.
-                Rectangle region = Request.RegionToCapture;
-                
-                // Prepare the parameters for RetrieveImageData to be called in a separate thread.
-                RetrieveImageDataParams retrieveParams = new RetrieveImageDataParams();
-
-                // After the Stream is created we are now finished with _renderTarget and have our own separate copy of the data,
-                // therefore it will now be safe to begin a new thread to complete processing.
-                // Note: RetrieveImageData will take care of closing the stream.
-                // Note 2: Surface.ToStream is the slowest part of the screen capture process - the other methods
-                //         available to us at this point are _renderTarget.GetDC(), and _renderTarget.LockRectangle/UnlockRectangle
-                if (Request.RegionToCapture.Width == 0)
-                {
-                    // The width is 0 so lets grab the entire window
-                    retrieveParams.Stream = Surface.ToStream(_renderTarget, ImageFileFormat.Bmp);
-                }
-                else if (Request.RegionToCapture.Height > 0)
-                {
-                    retrieveParams.Stream = Surface.ToStream(_renderTarget, ImageFileFormat.Bmp, region);
-                }
-
-                if (retrieveParams.Stream != null)
-                {
-                    // _screenshotRequest will most probably be null by the time RetrieveImageData is executed 
-                    // in a new thread, therefore we must provide the RequestId separately.
-                    retrieveParams.RequestId = Request.RequestId;
-
-                    // Begin a new thread to process the image data and send the request result back to the host application
-                    Thread t = new Thread(new ParameterizedThreadStart(RetrieveImageData));
-                    t.Start(retrieveParams);
-                }
+                DebugMessage("Data isn't the right size for the frame, resizing from " + data.Length + " to " + dr.Data.Length);
+                Array.Resize<byte>(ref data, (int)dr.Data.Length);
             }
-        }
-
-        /// <summary>
-        /// Used to hold the parameters to be passed to RetrieveImageData
-        /// </summary>
-        struct RetrieveImageDataParams
-        {
-            internal Stream Stream;
-            internal Guid RequestId;
-        }
-
-        /// <summary>
-        /// ParameterizedThreadStart method that places the image data from the stream into a byte array and then sets the Interface screenshot response. This can be called asynchronously.
-        /// </summary>
-        /// <param name="param">An instance of RetrieveImageDataParams is required to be passed as the parameter.</param>
-        /// <remarks>The stream object passed will be closed!</remarks>
-        void RetrieveImageData(object param)
-        {
-            RetrieveImageDataParams retrieveParams = (RetrieveImageDataParams)param;
-            try
-            {
-                SendResponse(retrieveParams.Stream, retrieveParams.RequestId);
-            }
-            finally
-            {
-                retrieveParams.Stream.Close();
-            }
+            dr.Data.Read(data, 0, data.Length);
+            _renderTarget.UnlockRectangle();
+            base.queueRawImage(data, width, height, format);
         }
     }
 }

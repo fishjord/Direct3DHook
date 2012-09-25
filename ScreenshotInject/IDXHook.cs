@@ -14,20 +14,10 @@ namespace ScreenshotInject
             set;
         }
 
-        bool ShowOverlay
-        {
-            get;
-            set;
-        }
-
-        ScreenshotRequest Request
-        {
-            get;
-            set;
-        }
-
         void Hook();
 
         void Cleanup();
+
+        void newRequest(ScreenshotRequest request);
     }
 }

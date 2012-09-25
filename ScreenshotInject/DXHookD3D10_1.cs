@@ -125,7 +125,7 @@ namespace ScreenshotInject
     }
 
     /// <summary>
-    /// Direct3D 10.1 Hook - this hooks the SwapChain.Present method to capture images
+    /// Direct3D 10 Hook - this hooks the SwapChain.Present method to capture images
     /// </summary>
     internal class DXHookD3D10_1: BaseDXHook
     {
@@ -366,7 +366,7 @@ namespace ScreenshotInject
                                     DateTime startCopyToSystemMemory = DateTime.Now;
                                     using (MemoryStream ms = new MemoryStream())
                                     {
-                                        Texture2D.ToStream(textureDest, ImageFileFormat.Bmp, ms);
+                                        Texture2D.ToStream(textureDest, ImageFileFormat.Png, ms);
                                         ms.Position = 0;
                                         this.DebugMessage("PresentHook: Copy to System Memory time: " + (DateTime.Now - startCopyToSystemMemory).ToString());
 

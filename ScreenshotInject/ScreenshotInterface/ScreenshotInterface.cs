@@ -8,6 +8,7 @@ using EasyHook;
 using System.Drawing;
 using System.IO;
 using System.Threading;
+using System.Drawing.Imaging;
 
 namespace ScreenshotInterface
 {
@@ -22,42 +23,91 @@ namespace ScreenshotInterface
         Direct3D11_1,
     }
 
-    public class ScreenshotRequest : MarshalByRefObject
+    #region Screenshot Requests
+    public abstract class ScreenshotRequest : MarshalByRefObject
     {
-        public ScreenshotRequest(Rectangle regionToCapture)
-        {
-            _regionToCapture = regionToCapture;
-        }
-
-        Guid _requestId = Guid.NewGuid();
-        Rectangle _regionToCapture;
-
+        private Guid requestId;
         public Guid RequestId
         {
-            get
-            {
-                return _requestId;
-            }
+            get { return requestId; }
         }
 
-        public Rectangle RegionToCapture
+        public ScreenshotRequest()
         {
-            get
-            {
-                return _regionToCapture;
-            }
-        }
+            this.requestId = Guid.NewGuid();
+        }            
     }
+
+    public class PauseRequest : ScreenshotRequest
+    {
+    }
+
+    public class ResumeRequest : ScreenshotRequest
+    {
+    }
+
+    public class StopRequest : ScreenshotRequest
+    {
+    }
+
+    public class CaptureRequest : ScreenshotRequest
+    {
+        private Rectangle region;
+        private double fps;
+
+        public Rectangle Region
+        {
+            get { return region; }
+        }
+
+        public double Fps
+        {
+            get { return fps; }
+        }
+
+        public CaptureRequest(Rectangle region, double fps)
+        {
+            this.region = region;
+            this.fps = fps;
+        }
+
+    }
+
+    public class StreamRequest : CaptureRequest
+    {
+        private string host;
+        private int port;
+
+        public string Host
+        {
+            get { return host; }
+        }
+
+        public int Port
+        {
+            get { return port; }
+        }
+
+        public StreamRequest(Rectangle region, string streamTo, int onPort, double fps)
+            : base(region, fps)
+        {
+            this.host = streamTo;
+            this.port = onPort;
+        }
+
+    }
+    #endregion
+
+
 
     public class ScreenshotResponse : MarshalByRefObject
     {
-        public ScreenshotResponse(Guid requestId, byte[] capturedBitmap)
-        {
-            _requestId = requestId;
-            _capturedBitmap = capturedBitmap;
-        }
+        private Guid _requestId;
+        private int width;
+        private int height;
+        private PixelFormat fmt;
+        private byte[] rawImage;
 
-        Guid _requestId;
         public Guid RequestId
         {
             get
@@ -66,24 +116,33 @@ namespace ScreenshotInterface
             }
         }
 
-        byte[] _capturedBitmap;
-        public byte[] CapturedBitmap
+        public int Width
         {
-            get
-            {
-                return _capturedBitmap;
-            }
+            get { return width; }
         }
 
-        public Bitmap CapturedBitmapAsImage
+        public int Height
         {
-            get
-            {
-                using (MemoryStream ms = new MemoryStream(_capturedBitmap))
-                {
-                    return (Bitmap)Image.FromStream(ms);
-                }
-            }
+            get { return height; }
+        }
+
+        public PixelFormat Fmt
+        {
+            get { return fmt; }
+        }
+
+        public byte[] RawImage
+        {
+            get { return rawImage; }
+        }
+
+        public ScreenshotResponse(Guid requestId, int width, int height, PixelFormat fmt, byte[] rawImage)
+        {
+            _requestId = requestId;
+            this.width = width;
+            this.height = height;
+            this.fmt = fmt;
+            this.rawImage = rawImage;
         }
     }
 
@@ -91,7 +150,7 @@ namespace ScreenshotInterface
     {
         public void ReportError(Int32 clientPID, Exception e)
         {
-            OnDebugMessage(clientPID, "A client process (" + clientPID + ") has reported an error\r\n" + e.Message);
+            OnMessage(clientPID, MessageType.error, "A client process (" + clientPID + ") has reported an error\r\n" + e.Message);
             //MessageBox.Show(e.ToString(), "A client process (" + clientPID + ") has reported an error...", MessageBoxButtons.OK, MessageBoxIcon.Error, MessageBoxDefaultButton.Button1);
         }
 
@@ -120,26 +179,21 @@ namespace ScreenshotInterface
         }
 
         private void ProcessResponseThread(object data)
+
         {
             RequestNotificationThreadParameter responseData = (RequestNotificationThreadParameter)data;
             ScreenshotManager.SetScreenshotResponse(responseData.ClientPID, responseData.Response);
         }
 
-        public void OnScreenshotResponse(Int32 clientPID, Guid requestId, byte[] bitmapData)
+        public void OnScreenshotResponse(Int32 clientPID, Guid requestId, int width, int height, PixelFormat pixFmt, byte[] bitmapData)
         {
-            //using (MemoryStream ms = new MemoryStream(bitmapData))
-            //{
-            //    using (Bitmap bm = (Bitmap)Image.FromStream(ms))
-            //    {
-            //    }
-            //}
             Thread t = new Thread(new ParameterizedThreadStart(ProcessResponseThread));
-            t.Start(new RequestNotificationThreadParameter() { ClientPID = clientPID, Response = new ScreenshotResponse(requestId, bitmapData) });
+            t.Start(new RequestNotificationThreadParameter() { ClientPID = clientPID, Response = new ScreenshotResponse(requestId, width, height, pixFmt, bitmapData) });
         }
 
-        public void OnDebugMessage(Int32 clientPID, string message)
+        public void OnMessage(Int32 clientPID, MessageType type, string message)
         {
-            ScreenshotManager.AddScreenshotDebugMessage(clientPID, message);
+            ScreenshotManager.AddScreenshotMessage(clientPID, type, message);
         }
 
     }

@@ -2,7 +2,6 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
-using System.Threading;
 
 namespace ScreenshotInterface
 {
@@ -11,9 +10,18 @@ namespace ScreenshotInterface
         Complete,
         ReplacedWithNewRequest,
     }
+
+    public enum MessageType
+    {
+        debug,
+        warning,
+        error,
+        info
+    }
+
     public delegate void ScreenshotRequestResponseNotification(Int32 clientPID, ResponseStatus status, ScreenshotResponse screenshotResponse);
 
-    public delegate void ScreenshotDebugMessage(Int32 clientPID, string message);
+    public delegate void ScreenshotMessage(Int32 clientPID, MessageType type, string message);
 
     /// <summary>
     /// Static class that takes care of Screenshots requests and responses
@@ -26,18 +34,18 @@ namespace ScreenshotInterface
         /// <summary>
         /// An event representing a debug message
         /// </summary>
-        public static event ScreenshotDebugMessage OnScreenshotDebugMessage;
+        public static event ScreenshotMessage OnScreenshotMessage;
 
         /// <summary>
         /// Add a debug message
         /// </summary>
         /// <param name="clientPID"></param>
         /// <param name="message"></param>
-        public static void AddScreenshotDebugMessage(Int32 clientPID, string message)
+        public static void AddScreenshotMessage(Int32 clientPID, MessageType type, string message)
         {
-            if (OnScreenshotDebugMessage != null)
+            if (OnScreenshotMessage != null)
             {
-                OnScreenshotDebugMessage(clientPID, message);
+                OnScreenshotMessage(clientPID, type, message);
             }
         }
 
@@ -76,45 +84,6 @@ namespace ScreenshotInterface
             catch
             {
             }
-        }
-
-        public static ScreenshotResponse GetScreenshotSynchronous(Int32 clientPID, ScreenshotRequest screenshotRequest)
-        {
-            // 2 second timeout
-            return GetScreenshotSynchronous(clientPID, screenshotRequest, new TimeSpan(0, 0, 2));
-        }
-
-        public static ScreenshotResponse GetScreenshotSynchronous(Int32 clientPID, ScreenshotRequest screenshotRequest, TimeSpan timeout)
-        {
-            object srLock = new object();
-            ScreenshotResponse sr = null;
-            
-            ScreenshotRequestResponseNotification srrn = delegate(Int32 cPID, ResponseStatus status, ScreenshotResponse screenshotResponse)
-            {
-                Interlocked.Exchange(ref sr, screenshotResponse);
-            };
-            DateTime startRequest = DateTime.Now;
-            AddScreenshotRequest(clientPID, screenshotRequest, srrn);
-
-            // Wait until the response has been returned
-            while (true)
-            {
-                Thread.Sleep(10);
-
-                
-                if (sr != null)
-                {
-                    break;
-                }
-                
-                // Break if timed out (will result in a null return value)
-                if (DateTime.Now - startRequest > timeout)
-                {
-                    return null;
-                }
-            }
-
-            return sr;
         }
 
         /// <summary>

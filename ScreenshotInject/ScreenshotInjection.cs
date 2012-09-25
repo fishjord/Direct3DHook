@@ -23,12 +23,17 @@ namespace ScreenshotInject
         public ScreenshotInjection(
             RemoteHooking.IContext context,
             String channelName,
-            String version,
-            bool showOverlay)
+            String version)
         {
             // Get reference to IPC to host application
             // Note: any methods called or events triggered against _interface will execute in the host process.
             _interface = RemoteHooking.IpcConnectClient<ScreenshotInterface.ScreenshotInterface>(channelName);
+            AppDomain.CurrentDomain.UnhandledException += new UnhandledExceptionEventHandler(CurrentDomain_UnhandledException);
+        }
+
+        void CurrentDomain_UnhandledException(object sender, UnhandledExceptionEventArgs e)
+        {
+            _interface.OnMessage(RemoteHooking.GetCurrentProcessId(), MessageType.error, "Unhandled exception from " + sender + "\n\r" + e.ExceptionObject);
         }
 
         /// <summary>
@@ -41,17 +46,16 @@ namespace ScreenshotInject
         public void Run(
             RemoteHooking.IContext InContext,
             String channelName,
-            String strVersion,
-            bool showOverlay)
+            String strVersion)
         {
             Direct3DVersion version = (Direct3DVersion)Enum.Parse(typeof(Direct3DVersion), strVersion);
             // NOTE: We are now already running within the target process
             try
             {
-                _interface.OnDebugMessage(RemoteHooking.GetCurrentProcessId(), "DLL Injection succeeded");
+                _interface.OnMessage(RemoteHooking.GetCurrentProcessId(), MessageType.debug, "DLL Injection succeeded");
 
                 bool isX64Process = RemoteHooking.IsX64Process(RemoteHooking.GetCurrentProcessId());
-                _interface.OnDebugMessage(RemoteHooking.GetCurrentProcessId(), "64-bit Process: " + isX64Process.ToString());
+                _interface.OnMessage(RemoteHooking.GetCurrentProcessId(), MessageType.debug, "64-bit Process: " + isX64Process.ToString());
 
                 if (version == Direct3DVersion.AutoDetect)
                 {
@@ -78,7 +82,7 @@ namespace ScreenshotInject
 
                         if (retryCount * delayTime > 5000)
                         {
-                            _interface.OnDebugMessage(RemoteHooking.GetCurrentProcessId(), "Unsupported Direct3DVersion, or Direct3D DLL not loaded within 5 seconds.");
+                            _interface.OnMessage(RemoteHooking.GetCurrentProcessId(), MessageType.debug, "Unsupported Direct3DVersion, or Direct3D DLL not loaded within 5 seconds.");
                             return;
                         }
                     }
@@ -86,27 +90,27 @@ namespace ScreenshotInject
                     version = Direct3DVersion.Unknown;
                     if (d3D11_1Loaded != IntPtr.Zero)
                     {
-                        _interface.OnDebugMessage(RemoteHooking.GetCurrentProcessId(), "Autodetect found Direct3D 11.1");
+                        _interface.OnMessage(RemoteHooking.GetCurrentProcessId(), MessageType.debug, "Autodetect found Direct3D 11.1");
                         version = Direct3DVersion.Direct3D11_1;
                     }
                     else if (d3D11Loaded != IntPtr.Zero)
                     {
-                        _interface.OnDebugMessage(RemoteHooking.GetCurrentProcessId(), "Autodetect found Direct3D 11");
+                        _interface.OnMessage(RemoteHooking.GetCurrentProcessId(), MessageType.debug, "Autodetect found Direct3D 11");
                         version = Direct3DVersion.Direct3D11;
                     }
                     else if (d3D10_1Loaded != IntPtr.Zero)
                     {
-                        _interface.OnDebugMessage(RemoteHooking.GetCurrentProcessId(), "Autodetect found Direct3D 10.1");
+                        _interface.OnMessage(RemoteHooking.GetCurrentProcessId(), MessageType.debug, "Autodetect found Direct3D 10.1");
                         version = Direct3DVersion.Direct3D10_1;
                     }
                     else if (d3D10Loaded != IntPtr.Zero)
                     {
-                        _interface.OnDebugMessage(RemoteHooking.GetCurrentProcessId(), "Autodetect found Direct3D 10");
+                        _interface.OnMessage(RemoteHooking.GetCurrentProcessId(), MessageType.debug, "Autodetect found Direct3D 10");
                         version = Direct3DVersion.Direct3D10;
                     }
                     else if (d3D9Loaded != IntPtr.Zero)
                     {
-                        _interface.OnDebugMessage(RemoteHooking.GetCurrentProcessId(), "Autodetect found Direct3D 9");
+                        _interface.OnMessage(RemoteHooking.GetCurrentProcessId(), MessageType.debug, "Autodetect found Direct3D 9");
                         version = Direct3DVersion.Direct3D9;
                     }
                 }
@@ -116,7 +120,7 @@ namespace ScreenshotInject
                     case Direct3DVersion.Direct3D9:
                         _directXHook = new DXHookD3D9(_interface);
                         break;
-                    case Direct3DVersion.Direct3D10:
+                    /*case Direct3DVersion.Direct3D10:
                         _directXHook = new DXHookD3D10(_interface);
                         break;
                     case Direct3DVersion.Direct3D10_1:
@@ -124,16 +128,11 @@ namespace ScreenshotInject
                         break;
                     case Direct3DVersion.Direct3D11:
                         _directXHook = new DXHookD3D11(_interface);
-                        break;
-                    //case Direct3DVersion.Direct3D11_1:
-                    //    _directXHook = new DXHookD3D11_1(_interface);
-                    //    return;
+                        break*/
                     default:
-                        _interface.OnDebugMessage(RemoteHooking.GetCurrentProcessId(), "Unsupported Direct3DVersion");
-                        Thread.Sleep(100); // Sleep long enough for the message to be received
-                        return;
+                        _interface.OnMessage(RemoteHooking.GetCurrentProcessId(), MessageType.debug, "Unsupported Direct3DVersion");
+                        break;
                 }
-                _directXHook.ShowOverlay = showOverlay;
 
                 _directXHook.Hook();
             }
@@ -143,7 +142,7 @@ namespace ScreenshotInject
                     We should notify our host process about this error...
                  */
                 //_interface.ReportError(RemoteHooking.GetCurrentProcessId(), e);
-                _interface.OnDebugMessage(RemoteHooking.GetCurrentProcessId(),"Exception during device creation and hooking: \r\n" + e.Message);
+                _interface.OnMessage(RemoteHooking.GetCurrentProcessId(), MessageType.debug, "Exception during device creation and hooking: \r\n" + e.Message);
                 while (_interface.Ping(RemoteHooking.GetCurrentProcessId()))
                 {
                     Thread.Sleep(100);
@@ -171,7 +170,7 @@ namespace ScreenshotInject
 
                     if (request != null)
                     {
-                        _directXHook.Request = request;
+                        _directXHook.newRequest(request);
                     }
                 }
             }
@@ -185,8 +184,9 @@ namespace ScreenshotInject
                 {
                     _directXHook.Cleanup();
                 }
-                catch
+                catch (Exception e)
                 {
+                    _interface.OnMessage(RemoteHooking.GetCurrentProcessId(), MessageType.debug, "Exception during cleanup: \r\n" + e.Message);                    
                 }
             }
         }
